@@ -17,25 +17,42 @@ func (b *DefaultBinder) BindQueryParams(c Context, i interface{}) error {
 
 func bindStruct(dst interface{}, params url.Values) error {
 	val := reflect.ValueOf(dst).Elem()
-	return bindRecursive(val, params)
+	_, err := bindRecursive(val, params)
+	return err
 }
 
-func bindRecursive(val reflect.Value, params url.Values) error {
+func bindRecursive(val reflect.Value, params url.Values) (bool, error) {
 	typ := val.Type()
+	bound := false
+
 	for i := 0; i < val.NumField(); i++ {
 		fieldVal := val.Field(i)
 		fieldType := typ.Field(i)
 
 		if fieldType.Anonymous {
-			if fieldVal.Kind() == reflect.Ptr {
+			isPtr := fieldVal.Kind() == reflect.Ptr
+			var structVal reflect.Value
+
+			if isPtr {
 				if fieldVal.IsNil() {
-					fieldVal.Set(reflect.New(fieldVal.Type().Elem()))
+					structVal = reflect.New(fieldVal.Type().Elem()).Elem()
+				} else {
+					structVal = fieldVal.Elem()
 				}
-				fieldVal = fieldVal.Elem()
+			} else {
+				structVal = fieldVal
 			}
-			if fieldVal.Kind() == reflect.Struct {
-				if err := bindRecursive(fieldVal, params); err != nil {
-					return err
+
+			if structVal.Kind() == reflect.Struct {
+				bnd, err := bindRecursive(structVal, params)
+				if err != nil {
+					return false, err
+				}
+				if bnd {
+					bound = true
+					if isPtr && fieldVal.IsNil() {
+						fieldVal.Set(structVal.Addr())
+					}
 				}
 				continue
 			}
@@ -46,21 +63,25 @@ func bindRecursive(val reflect.Value, params url.Values) error {
 			continue
 		}
 
-		valStr := params.Get(tag)
-		if valStr == "" {
+		if _, ok := params[tag]; !ok {
 			continue
 		}
 
+		valStr := params.Get(tag)
+
+		bound = true
 		switch fieldVal.Kind() {
 		case reflect.String:
 			fieldVal.SetString(valStr)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			intVal, err := strconv.ParseInt(valStr, 10, 64)
-			if err == nil {
-				fieldVal.SetInt(intVal)
+			if valStr != "" {
+				intVal, err := strconv.ParseInt(valStr, 10, 64)
+				if err == nil {
+					fieldVal.SetInt(intVal)
+				}
 			}
 		// Add other types as needed
 		}
 	}
-	return nil
+	return bound, nil
 }
